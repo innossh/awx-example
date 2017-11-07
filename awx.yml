@@ -1,0 +1,39 @@
+- hosts: all
+  gather_facts: true
+  become: true
+  vars:
+    awx_base_dir: /opt/awx
+    awx_postgres_data_dir: /var/lib/pgdocker
+
+  tasks:
+    - block: # install prerequisites
+      - yum:
+          name: "{{ item }}"
+          state: latest
+        with_items:
+          - git
+          - ansible
+          - docker
+
+      - easy_install:
+          name: pip
+          state: latest
+
+      - pip:
+          name: docker-py
+          state: latest
+
+      - systemd:
+          name: docker
+          state: started
+          enabled: yes
+
+    - block: # install awx
+      - git:
+          repo: 'https://github.com/ansible/awx.git'
+          dest: "{{ awx_base_dir }}"
+          version: 1.0.1
+
+      - command: "ansible-playbook -i inventory -e postgres_data_dir={{ awx_postgres_data_dir }} install.yml"
+        args:
+          chdir: "{{ awx_base_dir }}/installer"
