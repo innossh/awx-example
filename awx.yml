@@ -3,6 +3,7 @@
   become: true
   vars:
     awx_base_dir: /opt/awx
+    awx_dockerhub_version: 1.0.1.167
     awx_postgres_data_dir: /var/lib/pgdocker
 
   tasks:
@@ -32,8 +33,8 @@
       - git:
           repo: 'https://github.com/ansible/awx.git'
           dest: "{{ awx_base_dir }}"
-          version: 1.0.1
+          version: devel
 
-      - command: "ansible-playbook -i inventory -e postgres_data_dir={{ awx_postgres_data_dir }} install.yml"
+      - command: "ansible-playbook -i inventory -e dockerhub_version={{ awx_dockerhub_version }} -e postgres_data_dir={{ awx_postgres_data_dir }} install.yml"
         args:
           chdir: "{{ awx_base_dir }}/installer"
