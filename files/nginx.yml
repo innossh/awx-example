@@ -1,0 +1,17 @@
+- hosts: all
+  gather_facts: true
+  become: true
+
+  tasks:
+    - block:
+      - yum:
+          name: "{{ item }}"
+          state: latest
+        with_items:
+          - epel-release
+          - nginx
+
+      - systemd:
+          name: nginx
+          state: started
+          enabled: yes
