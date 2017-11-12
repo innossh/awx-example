@@ -5,11 +5,12 @@
   tasks:
     - block:
       - yum:
-          name: "{{ item }}"
+          name: epel-release
           state: latest
-        with_items:
-          - epel-release
-          - nginx
+
+      - yum:
+          name: nginx
+          state: latest
 
       - systemd:
           name: nginx
