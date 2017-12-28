@@ -2,9 +2,27 @@
   gather_facts: true
   become: true
   vars:
-    awx_base_dir: /opt/awx
-    awx_dockerhub_version: 1.0.1.167
+    awx_dockerhub_version: 1.0.2.289
     awx_postgres_data_dir: /var/lib/pgdocker
+    awx_example_base_dir: /opt/awx
+    awx_example_version: 1.0.2
+    awx_example_ssh_user: vagrant
+    awx_example_ssh_private_key_path: "/home/{{ awx_example_ssh_user }}/.ssh/insecure_private_key"
+    awx_example_tower_cli_config_path: "/home/{{ awx_example_ssh_user }}/.tower_cli.cfg"
+    awx_example_tower_cli_config:
+      host: http://localhost
+      username: admin
+      password: password
+      verify_ssl: False
+    awx_example_organization: Default
+    awx_example_credential_name: vagrant
+    awx_example_project_name: awx-example
+    awx_example_project_scm_url: "https://github.com/innossh/awx-example.git"
+    awx_example_inventory_name: servers
+    awx_example_inventory_source_name: servers.ini
+    awx_example_inventory_source_file: files/inventory
+    awx_example_job_template_name: Install Nginx
+    awx_example_job_template_playbook: files/nginx.yml
 
   tasks:
     - block: # install prerequisites
@@ -12,17 +30,33 @@
           name: "{{ item }}"
           state: latest
         with_items:
+          - yum-utils
+          - device-mapper-persistent-data
+          - lvm2
+
+      - command: yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+        args:
+          creates: /etc/yum.repos.d/docker-ce.repo
+
+      - yum:
+          name: "{{ item }}"
+          state: latest
+        with_items:
           - git
           - ansible
-          - docker
+          - docker-ce
 
       - easy_install:
           name: pip
           state: latest
 
       - pip:
-          name: docker-py
+          name: "{{ item }}"
           state: latest
+        with_items:
+          - docker-py
+          - ansible-tower-cli
+        tags: tower-cli
 
       - systemd:
           name: docker
@@ -32,9 +66,123 @@
     - block: # install awx
       - git:
           repo: 'https://github.com/ansible/awx.git'
-          dest: "{{ awx_base_dir }}"
-          version: devel
+          dest: "{{ awx_example_base_dir }}"
+          version: "{{ awx_example_version }}"
 
       - command: "ansible-playbook -i inventory -e dockerhub_version={{ awx_dockerhub_version }} -e postgres_data_dir={{ awx_postgres_data_dir }} install.yml"
         args:
-          chdir: "{{ awx_base_dir }}/installer"
+          chdir: "{{ awx_example_base_dir }}/installer"
+
+    - block: # setup awx
+      - get_url:
+          url: "https://raw.githubusercontent.com/hashicorp/vagrant/master/keys/vagrant"
+          dest: "{{ awx_example_ssh_private_key_path }}"
+          mode: 0600
+
+      - copy:
+          content: "{{ awx_example_tower_cli_config | to_nice_yaml }}"
+          dest: "{{ awx_example_tower_cli_config_path }}"
+          owner: "{{ awx_example_ssh_user }}"
+          group: "{{ awx_example_ssh_user }}"
+          mode: 0600
+
+      - name: Wait for AWX to come up
+        uri:
+          url: "http://localhost/"
+          status_code: 200
+          follow_redirects: none
+        register: result
+        until: result.status == 200
+        retries: 10
+        delay: 60
+
+      - block: # Credentials
+        - slurp:
+            src: "{{ awx_example_ssh_private_key_path }}"
+          register: ssh_key_data
+
+        # tower_credential module has a bug
+        - name: Create a credential on AWX
+#          tower_credential:
+#            name: "{{ awx_example_credential_name }}"
+#            organization: "{{ awx_example_organization }}"
+#            state: present
+#            kind: ssh
+#            username: "{{ awx_example_ssh_user }}"
+#            ssh_key_data: "{{ awx_example_ssh_private_key_path }}"
+#            tower_config_file: "{{ awx_example_tower_cli_config_path }}"
+          command: >
+            tower-cli credential create --organization {{ awx_example_organization }}
+            -n {{ awx_example_credential_name }}
+            --credential-type Machine --inputs '{{ inputs | to_json }}'
+          vars:
+            inputs:
+              username: "{{ awx_example_ssh_user }}"
+              ssh_key_data: "{{ ssh_key_data.content | b64decode | trim }}"
+
+        tags: tower-cli.credential
+
+      - block: # Projects
+        # tower_project module has a bug
+        - name: Create a project on AWX
+#        - tower_project:
+#            name: "{{ awx_example_project_name }}"
+#            organization: "{{ awx_example_organization }}"
+#            state: present
+#            scm_type: git
+#            scm_url: "{{ awx_example_project_scm_url }}"
+#            tower_config_file: "{{ awx_example_tower_cli_config_path }}"
+          command: >
+            tower-cli project create --organization {{ awx_example_organization }}
+            -n {{ awx_example_project_name }}
+            --scm-type git --scm-url {{ awx_example_project_scm_url }}
+            --scm-update-on-launch true
+
+        tags: tower-cli.project
+
+      - block: # Inventories
+        - name: Create a inventory on AWX
+          tower_inventory:
+            name: "{{ awx_example_inventory_name }}"
+            organization: "{{ awx_example_organization }}"
+            state: present
+            tower_config_file: "{{ awx_example_tower_cli_config_path }}"
+
+        # tower_inventory_source module is nothing
+        - name: Create a inventory source on AWX
+          command: >
+            tower-cli inventory_source create
+            -n {{ awx_example_inventory_source_name }}
+            -i {{ awx_example_inventory_name }} --source scm
+            --source-project {{ awx_example_project_name }} --source-path {{ awx_example_inventory_source_file }}
+            --overwrite-vars true
+
+        - name: Update a inventory source on AWX
+          command: >
+            tower-cli inventory_source update {{ awx_example_inventory_source_name }}
+
+        tags: tower-cli.inventory
+
+      - block: # Job Templates
+        # tower_job_template module has a bug
+        - name: Create a job template on AWX
+#        - tower_job_template:
+#            name: "{{ awx_example_job_template_name }}"
+#            state: present
+#            job_type: run
+#            inventory: "{{ awx_example_inventory_name }}"
+#            project: "{{ awx_example_project_name }}"
+#            playbook: "{{ awx_example_job_template_playbook }}"
+#            machine_credential: "{{ awx_example_credential_name }}"
+#            tower_config_file: "{{ awx_example_tower_cli_config_path }}"
+          command: >
+            tower-cli job_template create
+            -n "Install Nginx"
+            -i {{ awx_example_inventory_name }} --project {{ awx_example_project_name }}
+            --playbook {{ awx_example_job_template_playbook }}
+            --credential {{ awx_example_credential_name }}
+            --ask-job-type-on-launch true
+
+        tags: tower-cli.job-template
+
+      tags: tower-cli

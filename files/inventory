@@ -1,2 +1,2 @@
 [servers]
-server-01 ansible_host=192.168.1.2
+server-01 ansible_host=192.168.1.12
